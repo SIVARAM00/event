@@ -1,29 +1,18 @@
-import fs from "fs";
-
-const URL =
-  "https://bip.bitsathy.ac.in/nova-api/student-activity-masters?page=1";
-
 // ================================
-// Environment Variables
+// ENV VARIABLES
 // ================================
-const COOKIE = (process.env.COOKIE || "")
-  .replace(/[\r\n]+/g, "")
-  .trim();
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
+const EVENTS_URL = process.env.EVENTS_URL;
 
-const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
-const CHAT_ID = (process.env.CHAT_ID || "").trim();
-
-if (!COOKIE || !BOT_TOKEN || !CHAT_ID) {
-  console.log("❌ Missing environment variables.");
-  process.exit(1);
-}
-
-console.log("🚀 Event Monitor Running...");
+// Paste your manual cookie in Railway ENV
+let COOKIE = process.env.COOKIE;
 
 let lastUpdateId = 0;
+let lastEventSnapshot = "";
 
 // ================================
-// Telegram Send
+// TELEGRAM SEND MESSAGE
 // ================================
 async function notify(message) {
   try {
@@ -32,148 +21,78 @@ async function notify(message) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: CHAT_ID,
-        text: message,
-      }),
+        text: message
+      })
     });
   } catch (err) {
-    console.error("❌ Telegram Error:", err.message);
+    console.error("Telegram Error:", err);
   }
 }
 
 // ================================
-// Extract Fields
+// CHECK SESSION
 // ================================
-function extractFields(fields) {
-  const data = {};
-  for (const f of fields) {
-    data[f.validationKey] = f.value;
-  }
-  return data;
-}
-
-// ================================
-// Filter Rules
-// ================================
-function isValid(event) {
-  return (
-    event.status === "Active" &&
-    ["ONLINE", "OFFLINE"].includes(event.location) &&
-    ["Competition", "Paper Presentation", "Events-Attended"].includes(
-      event.event_category
-    )
-  );
-}
-
-// ================================
-// Load Seen IDs
-// ================================
-let seen = [];
-try {
-  seen = JSON.parse(fs.readFileSync("seen.json", "utf-8"));
-} catch {
-  seen = [];
-}
-let seenSet = new Set(seen);
-
-// ================================
-// Check Events
-// ================================
-async function checkEvents(manual = false) {
+async function checkSession() {
   try {
-    const response = await fetch(URL, {
-      headers: {
-        cookie: COOKIE,
-        "user-agent": "Mozilla/5.0",
-      },
+    const res = await fetch(EVENTS_URL, {
+      headers: { Cookie: COOKIE }
     });
 
-    if (!response.ok) {
-      console.log("⚠️ Session expired!");
-      await notify("❌ Cookie Session Expired.");
+    if (res.status === 401 || res.status === 403) {
+      await notify("⚠️ Session expired. Please update COOKIE in Railway.");
       return false;
     }
 
-    const data = await response.json();
-    let newEvents = [];
-
-    for (const e of data.resources || []) {
-      const title = e.title || "";
-      const fields = extractFields(e.fields || []);
-
-      const event = {
-        event_code: fields.event_code,
-        event_category: fields.event_category,
-        status: fields.status,
-        location: fields.location,
-      };
-
-      if (!event.event_code) continue;
-
-      if (isValid(event) && !seenSet.has(event.event_code)) {
-        newEvents.push({
-          id: event.event_code,
-          title,
-        });
-      }
-    }
-
-    if (newEvents.length === 0) {
-      if (manual) await notify("✅ No new events.");
-      return true;
-    }
-
-    for (const ev of newEvents) {
-      const message = `🚨 NEW EVENT FOUND\n\n${ev.title}`;
-      await notify(message);
-      seenSet.add(ev.id);
-    }
-
-    fs.writeFileSync("seen.json", JSON.stringify([...seenSet], null, 2));
-    console.log("💾 Updated seen.json");
-
+    await notify("✅ Session active.");
     return true;
+
   } catch (err) {
-    console.error("❌ Event Check Error:", err.message);
+    console.error(err);
     return false;
   }
 }
 
 // ================================
-// Check Cookie Status
+// CHECK EVENTS
 // ================================
-async function checkSession() {
+async function checkEvents(force = false) {
   try {
-    const response = await fetch(URL, {
-      headers: {
-        cookie: COOKIE,
-        "user-agent": "Mozilla/5.0",
-      },
+    const res = await fetch(EVENTS_URL, {
+      headers: { Cookie: COOKIE }
     });
 
-    if (!response.ok) {
-      await notify("❌ Cookie Session Expired.");
-    } else {
-      await notify("✅ Cookie Session Active.");
+    if (res.status === 401 || res.status === 403) {
+      await notify("⚠️ Session expired. Update COOKIE.");
+      return;
     }
+
+    const data = await res.text();
+
+    // Simple change detection
+    const snapshot = data.slice(0, 800);
+
+    if (force || snapshot !== lastEventSnapshot) {
+      lastEventSnapshot = snapshot;
+      await notify("📢 Event update detected!");
+    }
+
   } catch (err) {
-    console.error("❌ Session Check Error:", err.message);
+    console.error("Event Check Error:", err);
   }
 }
 
 // ================================
-// Listen Telegram Commands
+// TELEGRAM COMMAND LISTENER
 // ================================
 async function listenCommands() {
   try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${
-        lastUpdateId + 1
-      }`
+    const res = await fetch(
+      `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}`
     );
 
-    const data = await response.json();
+    const data = await res.json();
 
-    for (const update of data.result || []) {
+    for (const update of data.result) {
       lastUpdateId = update.update_id;
 
       const message = update.message?.text;
@@ -181,8 +100,12 @@ async function listenCommands() {
 
       if (!message || chatId.toString() !== CHAT_ID) continue;
 
+      if (message === "/ping") {
+        await notify("🏓 Pong! Bot running perfectly.");
+      }
+
       if (message === "/check") {
-        await notify("🔎 Checking for new events...");
+        await notify("🔍 Manual event check...");
         await checkEvents(true);
       }
 
@@ -190,25 +113,41 @@ async function listenCommands() {
         await checkSession();
       }
 
-      if (message === "/ping") {
-        await notify("🤖 Bot is alive.");
+      if (message === "/help") {
+        await notify(
+          "Commands:\n" +
+          "/ping - Check bot\n" +
+          "/check - Manual event check\n" +
+          "/status - Check login session\n" +
+          "/help - Show commands"
+        );
       }
     }
+
   } catch (err) {
-    console.error("❌ Telegram Listen Error:", err.message);
+    console.error("Telegram Poll Error:", err);
   }
 }
 
 // ================================
-// Main Loop
+// START BOT
 // ================================
-async function mainLoop() {
-  await checkEvents();     // automatic check
-  await listenCommands();  // check telegram commands
+async function start() {
+  await notify("🤖 Event Monitor Started Successfully.");
+
+  // Event check every 5 minutes
+  setInterval(() => {
+    checkEvents();
+  }, 5 * 60 * 1000);
+
+  // Telegram polling every 5 seconds
+  setInterval(() => {
+    listenCommands();
+  }, 5000);
+
+  // Run immediately on startup
+  await checkEvents(true);
+  await listenCommands();
 }
 
-// Run immediately
-mainLoop();
-
-// Run every 5 minutes
-setInterval(mainLoop, 5 * 60 * 1000);
+start();
