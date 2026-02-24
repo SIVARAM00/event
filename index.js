@@ -12,87 +12,59 @@ const COOKIE = process.env.COOKIE;
 // GLOBAL VARIABLES
 // ================================
 let lastUpdateId = 0;
-let lastEventSnapshot = "";
+let storedEvents = [];
 
 // ================================
-// LOAD PREVIOUS SNAPSHOT
+// LOAD SEEN DATA
 // ================================
 function loadSeenData() {
   try {
     if (fs.existsSync("seen.json")) {
       const raw = fs.readFileSync("seen.json");
       const parsed = JSON.parse(raw);
-      lastEventSnapshot = parsed.lastEventSnapshot || "";
-      console.log("📂 Loaded previous snapshot.");
+      storedEvents = parsed.events || [];
+      console.log("📂 Loaded seen.json");
     } else {
-      console.log("ℹ️ No seen.json found. Creating new one.");
       saveSeenData();
     }
   } catch (err) {
-    console.error("❌ Error loading seen.json:", err);
+    console.error("Error loading seen.json:", err);
   }
 }
 
 // ================================
-// SAVE SNAPSHOT
+// SAVE SEEN DATA
 // ================================
 function saveSeenData() {
   try {
     fs.writeFileSync(
       "seen.json",
-      JSON.stringify({ lastEventSnapshot }, null, 2)
+      JSON.stringify({ events: storedEvents }, null, 2)
     );
-    console.log("💾 Snapshot saved.");
+    console.log("💾 seen.json updated");
   } catch (err) {
-    console.error("❌ Error saving seen.json:", err);
+    console.error("Error saving seen.json:", err);
   }
 }
 
 // ================================
-// TELEGRAM SEND MESSAGE
+// TELEGRAM MESSAGE
 // ================================
 async function notify(message) {
-  try {
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: message
-      })
-    });
-  } catch (err) {
-    console.error("❌ Telegram Error:", err);
-  }
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: CHAT_ID,
+      text: message
+    })
+  });
 }
 
 // ================================
-// CHECK SESSION STATUS
+// FETCH EVENTS FROM WEBSITE
 // ================================
-async function checkSession() {
-  try {
-    const res = await fetch(EVENTS_URL, {
-      headers: { Cookie: COOKIE }
-    });
-
-    if (res.status === 401 || res.status === 403) {
-      await notify("⚠️ Session expired. Please update COOKIE in Railway.");
-      return false;
-    }
-
-    await notify("✅ Session active.");
-    return true;
-
-  } catch (err) {
-    console.error("❌ Session Check Error:", err);
-    return false;
-  }
-}
-
-// ================================
-// CHECK EVENTS
-// ================================
-async function checkEvents(force = false) {
+async function fetchEventsFromWebsite() {
   try {
     const res = await fetch(EVENTS_URL, {
       headers: { Cookie: COOKIE }
@@ -100,27 +72,85 @@ async function checkEvents(force = false) {
 
     if (res.status === 401 || res.status === 403) {
       await notify("⚠️ Session expired. Update COOKIE.");
-      return;
+      return [];
     }
 
-    const data = await res.text();
+    const data = await res.json(); // assuming JSON API
 
-    // Simple change detection
-    const snapshot = data.slice(0, 1000);
-
-    if (force || snapshot !== lastEventSnapshot) {
-      lastEventSnapshot = snapshot;
-      saveSeenData();
-      await notify("📢 Event update detected!");
-    }
+    return data.events || data;
 
   } catch (err) {
-    console.error("❌ Event Check Error:", err);
+    console.error("Fetch error:", err);
+    return [];
   }
 }
 
 // ================================
-// TELEGRAM POLLING
+// CHECK EVENTS (5 MIN)
+// ================================
+async function checkEvents() {
+  const websiteEvents = await fetchEventsFromWebsite();
+  if (!websiteEvents.length) return;
+
+  const newEvents = websiteEvents.filter(
+    ev => !storedEvents.some(stored => stored.id === ev.id)
+  );
+
+  if (newEvents.length > 0) {
+    storedEvents = websiteEvents;
+    saveSeenData();
+    await notify(`📢 ${newEvents.length} new event(s) detected!`);
+  }
+}
+
+// ================================
+// /last5 COMMAND
+// ================================
+async function sendLast5() {
+  // If seen.json is empty
+  if (!storedEvents.length) {
+    console.log("📥 seen.json empty. Fetching from website...");
+
+    const websiteEvents = await fetchEventsFromWebsite();
+
+    if (!websiteEvents.length) {
+      await notify("❌ No events found.");
+      return;
+    }
+
+    // Take last 5
+    storedEvents = websiteEvents.slice(-5);
+    saveSeenData();
+  }
+
+  const last5 = storedEvents.slice(-5).reverse();
+
+  let message = "📌 Last 5 Events:\n\n";
+
+  last5.forEach((event, index) => {
+    message += `${index + 1}. ${event.title || event.name}\n`;
+  });
+
+  await notify(message);
+}
+
+// ================================
+// SESSION STATUS
+// ================================
+async function checkSession() {
+  const res = await fetch(EVENTS_URL, {
+    headers: { Cookie: COOKIE }
+  });
+
+  if (res.status === 401 || res.status === 403) {
+    await notify("⚠️ Session expired.");
+  } else {
+    await notify("✅ Session active.");
+  }
+}
+
+// ================================
+// TELEGRAM POLLING (5 sec)
 // ================================
 async function listenCommands() {
   try {
@@ -140,12 +170,16 @@ async function listenCommands() {
 
       switch (message) {
         case "/ping":
-          await notify("🏓 Pong! Bot running.");
+          await notify("🏓 Pong!");
           break;
 
         case "/check":
-          await notify("🔍 Manual event check...");
-          await checkEvents(true);
+          await notify("🔍 Checking events...");
+          await checkEvents();
+          break;
+
+        case "/last5":
+          await sendLast5();
           break;
 
         case "/status":
@@ -154,21 +188,21 @@ async function listenCommands() {
 
         case "/help":
           await notify(
-            "🤖 Available Commands:\n\n" +
-            "/ping - Check bot\n" +
-            "/check - Manual event check\n" +
-            "/status - Check login session\n" +
-            "/help - Show commands"
+            "🤖 Commands:\n\n" +
+            "/ping\n" +
+            "/check\n" +
+            "/last5\n" +
+            "/status"
           );
           break;
 
         default:
-          await notify("❓ Unknown command. Type /help");
+          await notify("Unknown command. Use /help");
       }
     }
 
   } catch (err) {
-    console.error("❌ Telegram Poll Error:", err);
+    console.error("Telegram polling error:", err);
   }
 }
 
@@ -178,20 +212,11 @@ async function listenCommands() {
 async function start() {
   loadSeenData();
 
-  await notify("🤖 Event Monitor Started Successfully.");
+  await notify("🤖 Event Monitor Started.");
 
-  // Event check every 5 minutes
-  setInterval(() => {
-    checkEvents();
-  }, 5 * 60 * 1000);
+  setInterval(checkEvents, 5 * 60 * 1000);
+  setInterval(listenCommands, 5000);
 
-  // Telegram polling every 5 seconds
-  setInterval(() => {
-    listenCommands();
-  }, 5000);
-
-  // Run immediately on startup
-  await checkEvents(true);
   await listenCommands();
 }
 
