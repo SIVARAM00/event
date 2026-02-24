@@ -1,10 +1,14 @@
-import fetch from "node-fetch";
 import fs from "fs";
 
 const URL =
   "https://bip.bitsathy.ac.in/nova-api/student-activity-masters?page=1";
 
-const { COOKIE, BOT_TOKEN, CHAT_ID } = process.env;
+const COOKIE = (process.env.COOKIE || "")
+  .replace(/[\r\n]+/g, "")
+  .trim();
+
+const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
+const CHAT_ID = (process.env.CHAT_ID || "").trim();
 
 if (!COOKIE || !BOT_TOKEN || !CHAT_ID) {
   console.log("❌ Missing environment variables.");
