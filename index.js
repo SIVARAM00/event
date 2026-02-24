@@ -4,13 +4,13 @@ import fs from "fs";
 // ENV VARIABLES
 // =================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
+const ADMIN_ID = process.env.CHAT_ID; // Admin
 const COOKIE = process.env.COOKIE;
 
 const URL = "https://bip.bitsathy.ac.in/nova-api/student-activity-masters?page=1";
 
 const HEADERS = {
-  "cookie": COOKIE,
+  cookie: COOKIE,
   "user-agent": "Mozilla/5.0"
 };
 
@@ -19,6 +19,7 @@ const HEADERS = {
 // =================================
 let lastUpdateId = 0;
 let storedEvents = [];
+let users = [];
 
 // =================================
 // LOAD / SAVE seen.json
@@ -37,21 +38,51 @@ function saveSeenData() {
     "seen.json",
     JSON.stringify({ events: storedEvents }, null, 2)
   );
-  console.log("💾 seen.json updated");
 }
 
 // =================================
-// TELEGRAM MESSAGE
+// LOAD / SAVE users.json
 // =================================
-async function notify(message) {
+function loadUsers() {
+  if (fs.existsSync("users.json")) {
+    const raw = fs.readFileSync("users.json");
+    const parsed = JSON.parse(raw);
+    users = parsed.users || [];
+  }
+
+  // Always ensure admin is included
+  if (!users.includes(ADMIN_ID)) {
+    users.push(ADMIN_ID);
+    saveUsers();
+  }
+}
+
+function saveUsers() {
+  fs.writeFileSync(
+    "users.json",
+    JSON.stringify({ users }, null, 2)
+  );
+}
+
+// =================================
+// TELEGRAM SEND
+// =================================
+async function sendMessage(chatId, message) {
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      chat_id: CHAT_ID,
+      chat_id: chatId,
       text: message
     })
   });
+}
+
+// Send to all users
+async function broadcast(message) {
+  for (const user of users) {
+    await sendMessage(user, message);
+  }
 }
 
 // =================================
@@ -92,11 +123,10 @@ async function fetchEvents() {
     const validEvents = [];
 
     for (const e of data.resources) {
-      const title = e.title || "";
       const fields = extractFields(e.fields || []);
 
       const event = {
-        title: title,
+        title: e.title || "",
         event_code: fields.event_code,
         event_category: fields.event_category,
         status: fields.status,
@@ -104,10 +134,7 @@ async function fetchEvents() {
       };
 
       if (!event.event_code) continue;
-
-      if (isValid(event)) {
-        validEvents.push(event);
-      }
+      if (isValid(event)) validEvents.push(event);
     }
 
     return { expired: false, events: validEvents };
@@ -119,41 +146,38 @@ async function fetchEvents() {
 }
 
 // =================================
-// CHECK COOKIE STATUS
+// CHECK STATUS
 // =================================
-async function checkStatus() {
+async function checkStatus(chatId) {
   const result = await fetchEvents();
 
   if (result.expired) {
-    await notify("⚠️ Cookie expired! Please update it in Railway.");
+    await sendMessage(chatId, "⚠️ Cookie expired!");
   } else {
-    await notify("✅ Cookie active. Session valid.");
+    await sendMessage(chatId, "✅ Cookie active.");
   }
 }
 
 // =================================
-// CHECK NEW EVENTS (AUTO + MANUAL)
+// CHECK EVENTS
 // =================================
-async function checkEvents(manual = false) {
-  console.log("🔎 Checking events...");
-
+async function checkEvents(manual = false, chatId = null) {
   const result = await fetchEvents();
 
   if (result.expired) {
-    await notify("⚠️ Session expired! Update COOKIE.");
+    await broadcast("⚠️ Session expired! Update COOKIE.");
     return;
   }
 
-  const websiteEvents = result.events;
   let newCount = 0;
 
-  for (const event of websiteEvents) {
+  for (const event of result.events) {
     if (!storedEvents.some(e => e.event_code === event.event_code)) {
 
       storedEvents.push(event);
       newCount++;
 
-      await notify(
+      await broadcast(
         "🚨 NEW EVENT FOUND\n\n" +
         `${event.title}\n` +
         `Category: ${event.event_category}\n` +
@@ -164,22 +188,21 @@ async function checkEvents(manual = false) {
 
   if (newCount > 0) {
     saveSeenData();
-  } else if (manual) {
-    await notify("✅ No new events found.");
+  } else if (manual && chatId) {
+    await sendMessage(chatId, "✅ No new events.");
   }
 }
 
 // =================================
-// LAST 5 EVENTS
+// LAST 5
 // =================================
-async function sendLast5() {
+async function sendLast5(chatId) {
 
-  // If empty → fetch and store last 5
   if (!storedEvents.length) {
     const result = await fetchEvents();
 
     if (result.expired) {
-      await notify("⚠️ Session expired!");
+      await sendMessage(chatId, "⚠️ Session expired!");
       return;
     }
 
@@ -189,22 +212,16 @@ async function sendLast5() {
 
   const last5 = storedEvents.slice(-5).reverse();
 
-  if (!last5.length) {
-    await notify("❌ No events available.");
-    return;
-  }
-
   let message = "📌 Latest 5 Events:\n\n";
-
-  last5.forEach((event, i) => {
-    message += `${i + 1}. ${event.title}\n`;
+  last5.forEach((e, i) => {
+    message += `${i + 1}. ${e.title}\n`;
   });
 
-  await notify(message);
+  await sendMessage(chatId, message);
 }
 
 // =================================
-// TELEGRAM POLLING (5 sec)
+// TELEGRAM POLLING
 // =================================
 async function listenCommands() {
   try {
@@ -213,68 +230,62 @@ async function listenCommands() {
     );
 
     const data = await res.json();
-
-    if (!data.ok || !Array.isArray(data.result)) {
-      console.log("⚠️ Telegram response error:", data);
-      return;
-    }
+    if (!data.ok) return;
 
     for (const update of data.result) {
       lastUpdateId = update.update_id;
 
       const text = update.message?.text;
-      const chatId = update.message?.chat?.id;
+      const chatId = update.message?.chat?.id?.toString();
 
-      if (!text) continue;
+      if (!text || !chatId) continue;
 
-      // Clean command
-      let message = text
-        .replace("/", "")
-        .split("@")[0]
-        .trim()
-        .toLowerCase();
+      // Register user
+      if (!users.includes(chatId)) {
+        users.push(chatId);
+        saveUsers();
+      }
 
-      console.log("📩 Command received:", message);
+      let message = text.replace("/", "").split("@")[0].toLowerCase();
 
       switch (message) {
 
         case "ping":
-          await notify("🏓 Bot is running perfectly.");
+          await sendMessage(chatId, "🏓 Bot running.");
           break;
 
         case "check":
-          await checkEvents(true);
+          await checkEvents(true, chatId);
           break;
 
         case "status":
-          await checkStatus();
+          await checkStatus(chatId);
           break;
 
         case "last5":
-          await sendLast5();
+          await sendLast5(chatId);
           break;
 
         default:
-          await notify(
+          await sendMessage(
+            chatId,
             "Available commands:\n\n" +
-            "check  - Manually check new events\n" +
-            "status - Check if cookie expired\n" +
-            "ping   - Confirm bot is running\n" +
-            "last5  - Fetch latest events"
+            "check\nstatus\nping\nlast5"
           );
       }
     }
 
   } catch (err) {
-    console.error("Telegram polling error:", err);
+    console.error("Telegram error:", err);
   }
 }
 
 // =================================
-// START BOT
+// START
 // =================================
 async function start() {
   loadSeenData();
+  loadUsers();
 
   console.log("🚀 Event Monitor Running...");
 
