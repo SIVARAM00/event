@@ -1,15 +1,52 @@
+import fs from "fs";
+
 // ================================
 // ENV VARIABLES
 // ================================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const EVENTS_URL = process.env.EVENTS_URL;
+const COOKIE = process.env.COOKIE;
 
-// Paste your manual cookie in Railway ENV
-let COOKIE = process.env.COOKIE;
-
+// ================================
+// GLOBAL VARIABLES
+// ================================
 let lastUpdateId = 0;
 let lastEventSnapshot = "";
+
+// ================================
+// LOAD PREVIOUS SNAPSHOT
+// ================================
+function loadSeenData() {
+  try {
+    if (fs.existsSync("seen.json")) {
+      const raw = fs.readFileSync("seen.json");
+      const parsed = JSON.parse(raw);
+      lastEventSnapshot = parsed.lastEventSnapshot || "";
+      console.log("📂 Loaded previous snapshot.");
+    } else {
+      console.log("ℹ️ No seen.json found. Creating new one.");
+      saveSeenData();
+    }
+  } catch (err) {
+    console.error("❌ Error loading seen.json:", err);
+  }
+}
+
+// ================================
+// SAVE SNAPSHOT
+// ================================
+function saveSeenData() {
+  try {
+    fs.writeFileSync(
+      "seen.json",
+      JSON.stringify({ lastEventSnapshot }, null, 2)
+    );
+    console.log("💾 Snapshot saved.");
+  } catch (err) {
+    console.error("❌ Error saving seen.json:", err);
+  }
+}
 
 // ================================
 // TELEGRAM SEND MESSAGE
@@ -25,12 +62,12 @@ async function notify(message) {
       })
     });
   } catch (err) {
-    console.error("Telegram Error:", err);
+    console.error("❌ Telegram Error:", err);
   }
 }
 
 // ================================
-// CHECK SESSION
+// CHECK SESSION STATUS
 // ================================
 async function checkSession() {
   try {
@@ -47,7 +84,7 @@ async function checkSession() {
     return true;
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Session Check Error:", err);
     return false;
   }
 }
@@ -69,20 +106,21 @@ async function checkEvents(force = false) {
     const data = await res.text();
 
     // Simple change detection
-    const snapshot = data.slice(0, 800);
+    const snapshot = data.slice(0, 1000);
 
     if (force || snapshot !== lastEventSnapshot) {
       lastEventSnapshot = snapshot;
+      saveSeenData();
       await notify("📢 Event update detected!");
     }
 
   } catch (err) {
-    console.error("Event Check Error:", err);
+    console.error("❌ Event Check Error:", err);
   }
 }
 
 // ================================
-// TELEGRAM COMMAND LISTENER
+// TELEGRAM POLLING
 // ================================
 async function listenCommands() {
   try {
@@ -100,32 +138,37 @@ async function listenCommands() {
 
       if (!message || chatId.toString() !== CHAT_ID) continue;
 
-      if (message === "/ping") {
-        await notify("🏓 Pong! Bot running perfectly.");
-      }
+      switch (message) {
+        case "/ping":
+          await notify("🏓 Pong! Bot running.");
+          break;
 
-      if (message === "/check") {
-        await notify("🔍 Manual event check...");
-        await checkEvents(true);
-      }
+        case "/check":
+          await notify("🔍 Manual event check...");
+          await checkEvents(true);
+          break;
 
-      if (message === "/status") {
-        await checkSession();
-      }
+        case "/status":
+          await checkSession();
+          break;
 
-      if (message === "/help") {
-        await notify(
-          "Commands:\n" +
-          "/ping - Check bot\n" +
-          "/check - Manual event check\n" +
-          "/status - Check login session\n" +
-          "/help - Show commands"
-        );
+        case "/help":
+          await notify(
+            "🤖 Available Commands:\n\n" +
+            "/ping - Check bot\n" +
+            "/check - Manual event check\n" +
+            "/status - Check login session\n" +
+            "/help - Show commands"
+          );
+          break;
+
+        default:
+          await notify("❓ Unknown command. Type /help");
       }
     }
 
   } catch (err) {
-    console.error("Telegram Poll Error:", err);
+    console.error("❌ Telegram Poll Error:", err);
   }
 }
 
@@ -133,6 +176,8 @@ async function listenCommands() {
 // START BOT
 // ================================
 async function start() {
+  loadSeenData();
+
   await notify("🤖 Event Monitor Started Successfully.");
 
   // Event check every 5 minutes
