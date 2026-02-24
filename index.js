@@ -225,7 +225,7 @@ async function listenCommands() {
       const text = update.message?.text;
       const chatId = update.message?.chat?.id;
 
-      if (!text || chatId.toString() !== CHAT_ID) continue;
+      if (!text) continue;
 
       // Clean command
       let message = text
