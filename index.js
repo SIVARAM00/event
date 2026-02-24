@@ -13,8 +13,10 @@ if (!COOKIE || !BOT_TOKEN || !CHAT_ID) {
 
 console.log("🚀 Event Monitor Running...");
 
+let lastUpdateId = 0;
+
 // ================================
-// Telegram Notification
+// Telegram Send
 // ================================
 async function notify(message) {
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -60,13 +62,12 @@ try {
 } catch {
   seen = [];
 }
-
 let seenSet = new Set(seen);
 
 // ================================
-// Main Logic
+// Check Events
 // ================================
-async function checkEvents() {
+async function checkEvents(manual = false) {
   const response = await fetch(URL, {
     headers: {
       cookie: COOKIE,
@@ -77,7 +78,7 @@ async function checkEvents() {
   if (!response.ok) {
     console.log("⚠️ Session expired!");
     await notify("⚠️ Session expired! Refresh cookie.");
-    return;
+    return false;
   }
 
   const data = await response.json();
@@ -105,20 +106,79 @@ async function checkEvents() {
   }
 
   if (newEvents.length === 0) {
-    console.log("✅ No new events.");
-    return;
+    if (manual) await notify("✅ No new events.");
+    return true;
   }
 
   for (const ev of newEvents) {
     const message = `🚨 NEW EVENT FOUND\n\n${ev.title}`;
-    console.log(message);
     await notify(message);
     seenSet.add(ev.id);
   }
 
-  // Save updated seen list
   fs.writeFileSync("seen.json", JSON.stringify([...seenSet], null, 2));
   console.log("💾 Updated seen.json");
+
+  return true;
 }
 
-checkEvents();
+// ================================
+// Check Cookie Only
+// ================================
+async function checkSession() {
+  const response = await fetch(URL, {
+    headers: {
+      cookie: COOKIE,
+      "user-agent": "Mozilla/5.0",
+    },
+  });
+
+  if (!response.ok) {
+    await notify("❌ Cookie Session Expired.");
+  } else {
+    await notify("✅ Cookie Session Active.");
+  }
+}
+
+// ================================
+// Listen Telegram Commands
+// ================================
+async function listenCommands() {
+  const response = await fetch(
+    `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${
+      lastUpdateId + 1
+    }`
+  );
+
+  const data = await response.json();
+
+  for (const update of data.result) {
+    lastUpdateId = update.update_id;
+
+    const message = update.message?.text;
+    const chatId = update.message?.chat?.id;
+
+    if (!message || chatId.toString() !== CHAT_ID) continue;
+
+    if (message === "/check") {
+      await notify("🔎 Checking for new events...");
+      await checkEvents(true);
+    }
+
+    if (message === "/status") {
+      await checkSession();
+    }
+
+    if (message === "/ping") {
+      await notify("🤖 Bot is alive.");
+    }
+  }
+}
+
+// ================================
+// Run
+// ================================
+(async () => {
+  await checkEvents(); // normal scheduled check
+  await listenCommands(); // manual control
+})();
