@@ -207,47 +207,66 @@ async function sendLast5() {
 // TELEGRAM POLLING (5 sec)
 // =================================
 async function listenCommands() {
-  const res = await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}`
-  );
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}`
+    );
 
-  const data = await res.json();
+    const data = await res.json();
 
-  for (const update of data.result) {
-    lastUpdateId = update.update_id;
-
-    const message = update.message?.text?.toLowerCase();
-    const chatId = update.message?.chat?.id;
-
-    if (!message || chatId.toString() !== CHAT_ID) continue;
-
-    switch (message) {
-
-      case "ping":
-        await notify("🏓 Bot is running perfectly.");
-        break;
-
-      case "check":
-        await checkEvents(true);
-        break;
-
-      case "status":
-        await checkStatus();
-        break;
-
-      case "last5":
-        await sendLast5();
-        break;
-
-      default:
-        await notify(
-          "Available commands:\n\n" +
-          "check  - Manually check new events\n" +
-          "status - Check if cookie expired\n" +
-          "ping   - Confirm bot is running\n" +
-          "last5  - Fetch latest events"
-        );
+    if (!data.ok || !Array.isArray(data.result)) {
+      console.log("⚠️ Telegram response error:", data);
+      return;
     }
+
+    for (const update of data.result) {
+      lastUpdateId = update.update_id;
+
+      const text = update.message?.text;
+      const chatId = update.message?.chat?.id;
+
+      if (!text || chatId.toString() !== CHAT_ID) continue;
+
+      // Clean command
+      let message = text
+        .replace("/", "")
+        .split("@")[0]
+        .trim()
+        .toLowerCase();
+
+      console.log("📩 Command received:", message);
+
+      switch (message) {
+
+        case "ping":
+          await notify("🏓 Bot is running perfectly.");
+          break;
+
+        case "check":
+          await checkEvents(true);
+          break;
+
+        case "status":
+          await checkStatus();
+          break;
+
+        case "last5":
+          await sendLast5();
+          break;
+
+        default:
+          await notify(
+            "Available commands:\n\n" +
+            "check  - Manually check new events\n" +
+            "status - Check if cookie expired\n" +
+            "ping   - Confirm bot is running\n" +
+            "last5  - Fetch latest events"
+          );
+      }
+    }
+
+  } catch (err) {
+    console.error("Telegram polling error:", err);
   }
 }
 
