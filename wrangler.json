@@ -1,0 +1,15 @@
+{
+  "$schema": "https://developers.cloudflare.com/workers/wrangler/config-schema.json",
+  "name": "event-monitor",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "workers_dev": true,
+
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+
+  "vars": {
+    "URL": "https://bip.bitsathy.ac.in/nova-api/student-activity-masters?page=1"
+  }
+}
