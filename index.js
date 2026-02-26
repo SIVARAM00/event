@@ -89,7 +89,6 @@ async function sendMessage(chatId, message) {
   console.log("✅ Message sent");
 }
 
-// Send to all users
 async function broadcast(message) {
   console.log(`📢 Broadcasting to ${users.length} users`);
   for (const user of users) {
@@ -145,8 +144,6 @@ async function fetchEvents() {
     const data = await res.json();
     const validEvents = [];
 
-    console.log(`📊 Total resources received: ${data.resources.length}`);
-
     for (const e of data.resources) {
       const fields = extractFields(e.fields || []);
 
@@ -158,18 +155,12 @@ async function fetchEvents() {
         location: fields.location
       };
 
-      if (!event.event_code) {
-        console.log("⚠️ Skipping event without event_code");
-        continue;
-      }
+      if (!event.event_code) continue;
 
       if (isValid(event)) {
-        console.log(`✅ Valid event: ${event.title}`);
         validEvents.push(event);
       }
     }
-
-    console.log(`🎯 Valid events count: ${validEvents.length}`);
 
     return { expired: false, events: validEvents };
 
@@ -183,9 +174,7 @@ async function fetchEvents() {
 // CHECK STATUS
 // =================================
 async function checkStatus(chatId) {
-  console.log("🔍 Checking cookie status...");
   const result = await fetchEvents();
-
   if (result.expired) {
     await sendMessage(chatId, "⚠️ Cookie expired!");
   } else {
@@ -194,7 +183,7 @@ async function checkStatus(chatId) {
 }
 
 // =================================
-// CHECK EVENTS
+// CHECK EVENTS (Updated to store newest first)
 // =================================
 async function checkEvents(manual = false, chatId = null) {
   console.log("🔁 Checking for new events...");
@@ -202,7 +191,6 @@ async function checkEvents(manual = false, chatId = null) {
   const result = await fetchEvents();
 
   if (result.expired) {
-    console.log("⚠️ Session expired during check");
     await broadcast("⚠️ Session expired! Update COOKIE.");
     return;
   }
@@ -211,10 +199,10 @@ async function checkEvents(manual = false, chatId = null) {
 
   for (const event of result.events) {
     if (!storedEvents.some(e => e.event_code === event.event_code)) {
-
       console.log(`🚨 NEW EVENT DETECTED: ${event.title}`);
 
-      storedEvents.push(event);
+      // Adding to the START of the array so index 0 is always newest
+      storedEvents.unshift(event);
       newCount++;
 
       await broadcast(
@@ -227,36 +215,31 @@ async function checkEvents(manual = false, chatId = null) {
   }
 
   if (newCount > 0) {
-    console.log(`🎉 ${newCount} new events added`);
     saveSeenData();
-  } else {
-    console.log("✅ No new events found");
-    if (manual && chatId) {
-      await sendMessage(chatId, "✅ No new events.");
-    }
+  } else if (manual && chatId) {
+    await sendMessage(chatId, "✅ No new events.");
   }
 }
 
 // =================================
-// LAST 5
+// LAST 5 (Updated to grab from the front)
 // =================================
 async function sendLast5(chatId) {
   console.log("📌 Fetching last 5 events");
 
   if (!storedEvents.length) {
-    console.log("⚠️ No stored events, fetching fresh...");
     const result = await fetchEvents();
-
     if (result.expired) {
       await sendMessage(chatId, "⚠️ Session expired!");
       return;
     }
-
-    storedEvents = result.events.slice(-5);
+    // Store the first 5 from the fetch as the initial list
+    storedEvents = result.events.slice(0, 5);
     saveSeenData();
   }
 
-  const last5 = storedEvents.slice(-5).reverse();
+  // Since newest is at the front, we just take the first 5
+  const last5 = storedEvents.slice(0, 5);
 
   let message = "📌 Latest 5 Events:\n\n";
   last5.forEach((e, i) => {
@@ -270,8 +253,6 @@ async function sendLast5(chatId) {
 // TELEGRAM POLLING
 // =================================
 async function listenCommands() {
-  console.log("👂 Listening for Telegram commands...");
-
   try {
     const res = await fetch(
       `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}`
@@ -282,39 +263,31 @@ async function listenCommands() {
 
     for (const update of data.result) {
       lastUpdateId = update.update_id;
-
       const text = update.message?.text;
       const chatId = update.message?.chat?.id?.toString();
 
       if (!text || !chatId) continue;
 
-      console.log(`📥 Command received: ${text}`);
-
       if (!users.includes(chatId)) {
         users.push(chatId);
         saveUsers();
-        console.log("👤 New user registered");
       }
 
-      let message = text.replace("/", "").split("@")[0].toLowerCase();
+      let cmd = text.replace("/", "").split("@")[0].toLowerCase();
 
-      switch (message) {
+      switch (cmd) {
         case "ping":
           await sendMessage(chatId, "🏓 Bot running.");
           break;
-
         case "check":
           await checkEvents(true, chatId);
           break;
-
         case "status":
           await checkStatus(chatId);
           break;
-
         case "last5":
           await sendLast5(chatId);
           break;
-
         default:
           await sendMessage(
             chatId,
@@ -322,7 +295,6 @@ async function listenCommands() {
           );
       }
     }
-
   } catch (err) {
     console.error("❌ Telegram polling error:", err.message);
   }
@@ -335,9 +307,6 @@ async function start() {
   console.log("🚀 Starting Event Monitor...");
   loadSeenData();
   loadUsers();
-
-  console.log("⏱ Auto event check every 5 minutes");
-  console.log("⏱ Telegram polling every 5 seconds");
 
   setInterval(() => checkEvents(false), 5 * 60 * 1000);
   setInterval(listenCommands, 5000);
